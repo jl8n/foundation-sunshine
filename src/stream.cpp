@@ -91,6 +91,7 @@ extern "C" {
 #define IDX_DS5_HAPTICS_PCM 22  // Authored DualSense actuator PCM (Sunshine protocol extension)
 #define IDX_DS5_HAPTICS_IR_V2 23  // Device-independent analyzed haptics (Sunshine protocol extension)
 #define IDX_TEXT_CONTEXT 24  // Remote text focus/context update (Sunshine protocol extension)
+#define IDX_RAW_HID_OUTPUT 25  // Raw HID controller output report (see raw_hid_wire.h)
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -118,6 +119,7 @@ static const short packetTypes[] = {
   0x550A,  // Authored DualSense haptics PCM (Sunshine protocol extension)
   0x550B,  // Device-independent DualSense haptics IR v2 (Sunshine protocol extension)
   0x550C,  // Remote text context update (Sunshine protocol extension)
+  input::raw_hid_wire::output_control_type,  // Raw HID controller output report
 };
 
 namespace asio = boost::asio;
@@ -278,6 +280,14 @@ namespace stream {
     std::uint16_t id;
     std::uint16_t reportrate;
     std::uint8_t type;
+  };
+
+  struct control_raw_hid_output_t {
+    control_header_v2 header;
+
+    std::uint16_t id;
+    std::uint16_t length;
+    std::uint8_t report[input::raw_hid_wire::max_report_size];
   };
 
   struct control_set_rgb_led_t {
@@ -1435,6 +1445,25 @@ namespace stream {
         encrypted_payload;
 
       payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    }
+    else if (msg.type == platf::gamepad_feedback_e::raw_hid_output) {
+      control_raw_hid_output_t plaintext {};
+      plaintext.header.type = packetTypes[IDX_RAW_HID_OUTPUT];
+
+      auto &data = msg.data.raw_hid;
+      plaintext.id = util::endian::little(msg.id);
+      plaintext.length = util::endian::little(data.length);
+      std::copy_n(data.report.begin(), data.length, plaintext.report);
+
+      // Only send the bytes the report uses
+      const auto size = offsetof(control_raw_hid_output_t, report) + data.length;
+      plaintext.header.payloadLength = size - sizeof(control_header_v2);
+
+      std::array<std::uint8_t,
+        sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+        encrypted_payload;
+
+      payload = encode_control(session, std::string_view {reinterpret_cast<const char *>(&plaintext), size}, encrypted_payload);
     }
     else if (msg.type == platf::gamepad_feedback_e::set_adaptive_triggers) {
       control_adaptive_triggers_t plaintext;
