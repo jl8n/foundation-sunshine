@@ -5,7 +5,9 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
 #include <array>
+#include <span>
 #include <bitset>
 #include <chrono>
 #include <cstdint>
@@ -110,6 +112,7 @@ namespace platf {
     set_rgb_led,  ///< Set RGB LED
     set_adaptive_triggers,  ///< Set adaptive triggers
     ds5_haptics_pcm,  ///< Authored DualSense actuator PCM (48 kHz, stereo, S16LE)
+    raw_hid_output,  ///< Output report for a controller forwarded as raw HID
   };
 
   struct gamepad_feedback_msg_t {
@@ -175,6 +178,16 @@ namespace platf {
       return msg;
     }
 
+    static gamepad_feedback_msg_t
+    make_raw_hid_output(std::uint16_t id, std::span<const std::uint8_t> report) {
+      gamepad_feedback_msg_t msg;
+      msg.type = gamepad_feedback_e::raw_hid_output;
+      msg.id = id;
+      msg.data.raw_hid.length = static_cast<std::uint16_t>(std::min(report.size(), msg.data.raw_hid.report.size()));
+      std::copy_n(report.begin(), msg.data.raw_hid.length, msg.data.raw_hid.report.begin());
+      return msg;
+    }
+
     gamepad_feedback_e type;
     std::uint16_t id;
 
@@ -216,6 +229,11 @@ namespace platf {
         std::uint64_t presentation_time_us;
         std::array<std::uint8_t, 240 * 2 * sizeof(std::int16_t)> pcm;
       } ds5_haptics;
+
+      struct {
+        std::uint16_t length;
+        std::array<std::uint8_t, 64> report;  // Report ID first, if the device uses them
+      } raw_hid;
     } data;
   };
 
@@ -339,6 +357,7 @@ namespace platf {
     constexpr caps_t ds5_haptics_pcm = 0x80;  // Native DualSense authored haptics PCM
     constexpr caps_t dynamic_sdr_white = 0x100;  // Reserved legacy SDR white updates; never advertised
     constexpr caps_t remote_text_context = 0x200;  // InputPane/UIA text context updates
+    constexpr caps_t raw_hid_reports = 0x40000000;  // Raw HID controller passthrough (see raw_hid_wire.h)
   };  // namespace platform_caps
 
   struct gamepad_state_t {
@@ -1251,6 +1270,28 @@ namespace platf {
                 feedback_queue_t feedback_queue, std::string_view client_gamepad);
   void
   free_gamepad(input_t &input, int nr);
+
+  /**
+   * @brief Create a virtual device for a controller whose raw HID reports the client forwards.
+   * @param input The global input context.
+   * @param id The gamepad ID.
+   * @param vendor_id USB vendor ID of the client's controller.
+   * @param product_id USB product ID of the client's controller.
+   * @param feedback_queue The queue for posting the device's output reports back to the client.
+   * @return 0 on success.
+   */
+  int
+  alloc_raw_hid_gamepad(input_t &input, const gamepad_id_t &id, std::uint16_t vendor_id,
+                        std::uint16_t product_id, feedback_queue_t feedback_queue);
+
+  /**
+   * @brief Feed a raw HID input report to a gamepad created by alloc_raw_hid_gamepad().
+   * @param input The global input context.
+   * @param nr The global gamepad index.
+   * @param report The report, starting with its report ID if the device uses them.
+   */
+  void
+  raw_hid_input(input_t &input, int nr, std::span<const std::uint8_t> report);
   /**
    * @brief Check whether an allocated gamepad is backed by the DualSense path.
    * @param input The global platform input context.

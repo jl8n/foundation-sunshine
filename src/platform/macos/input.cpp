@@ -314,6 +314,14 @@ const KeyCodeMap kKeyCodesMap[] = {
     return false;
   }
 
+  int
+  alloc_raw_hid_gamepad(input_t &, const gamepad_id_t &, std::uint16_t, std::uint16_t, feedback_queue_t) {
+    return -1;
+  }
+
+  void
+  raw_hid_input(input_t &, int, std::span<const std::uint8_t>) {}
+
   bool
   gamepad_has_ds5_audio_haptics(input_t &) {
     return false;
