@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - master
+      - steam-controller-passthrough
   workflow_dispatch:
     inputs:
       gui_run_id:
@@ -126,7 +127,7 @@ jobs:
     name: Windows
     needs: setup_release
     permissions:
-      contents: read
+      contents: write  # forks publish their own release (see "Publish fork release")
       actions: write  # prune stale ccache entries after saving this run's
     runs-on: windows-latest
     steps:
@@ -224,7 +225,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
-        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
+        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG -Repository ${{ github.repository }}
 
       - name: Build Web UI
         shell: pwsh
@@ -536,6 +537,20 @@ jobs:
             artifacts/SHA256SUMS.txt
             artifacts/checksums.json
           if-no-files-found: error
+
+      # The installer's sidecar manifest points at this repository's release, and
+      # forks have no release bot token, so publish with the workflow token.
+      - name: Publish fork release
+        if: github.repository != 'AlkaidLab/foundation-sunshine' && github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
+        run: |
+          $installer = (Get-Item artifacts/Sunshine.*.WindowsInstaller.exe).FullName
+          gh release create $env:TAG artifacts/Sunshine.Ds5Sidecar.x64.zip $installer `
+            --repo ${{ github.repository }} --target ${{ github.sha }} --prerelease `
+            --title $env:TAG --notes "Build of ${{ github.ref_name }} at ${{ github.sha }}"
 
       - name: Create/Update GitHub Release
         if: needs.setup_release.outputs.publish_release == 'true'
