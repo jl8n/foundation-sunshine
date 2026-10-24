@@ -590,6 +590,7 @@ namespace platf {
 
     vigem_t *vigem;
     std::unique_ptr<ds5::sidecar_client_t> ds5_sidecar;
+    std::unique_ptr<ds5::sidecar_client_t> steam_sidecar;
     dsu_server_t *dsu_server;
     bool dsu_uninitialized_warning_logged = false;
     vmouse::device_t *vmouse_dev;
@@ -614,6 +615,7 @@ namespace platf {
     }
 
     raw.ds5_sidecar = std::make_unique<ds5::sidecar_client_t>();
+    raw.steam_sidecar = std::make_unique<ds5::sidecar_client_t>();
 
     // 初始化DSU服务器（延迟初始化，只在需要时创建）
     raw.dsu_server = nullptr;
@@ -2080,9 +2082,46 @@ namespace platf {
     return raw->vigem->alloc_gamepad_internal(id, feedback_queue, selectedGamepadType, back_as_touchpad_click);
   }
 
+  int
+  alloc_raw_hid_gamepad(input_t &input, const gamepad_id_t &id, std::uint16_t vendor_id,
+                        std::uint16_t product_id, feedback_queue_t feedback_queue) {
+    auto raw = (input_raw_t *) input.get();
+
+    // The Steam Controller (2026): wired, or either of its wireless pucks
+    const bool steam_controller = vendor_id == 0x28de &&
+                                  (product_id == 0x1302 || product_id == 0x1304 || product_id == 0x1305);
+    if (!steam_controller) {
+      BOOST_LOG(warning) << "No virtual device for raw HID controller "sv
+                         << util::hex(vendor_id).to_string_view() << ':' << util::hex(product_id).to_string_view();
+      return -1;
+    }
+
+    ds5::refresh_component_availability();
+    if (!raw->steam_sidecar || !ds5::component_available()) {
+      BOOST_LOG(warning) << "A Steam Controller needs the optional controller component, which is unavailable"sv;
+      return -1;
+    }
+
+    BOOST_LOG(info) << "Gamepad "sv << id.globalIndex << " will be a Steam Controller fed with the client's raw reports"sv;
+    return raw->steam_sidecar->alloc_steam_controller(id, std::move(feedback_queue));
+  }
+
+  void
+  raw_hid_input(input_t &input, int nr, std::span<const std::uint8_t> report) {
+    auto raw = (input_raw_t *) input.get();
+    if (raw->steam_sidecar) {
+      raw->steam_sidecar->submit_raw(nr, report);
+    }
+  }
+
   void
   free_gamepad(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
+
+    if (raw->steam_sidecar && raw->steam_sidecar->owns(nr)) {
+      raw->steam_sidecar->free(nr);
+      return;
+    }
 
     if (raw->ds5_sidecar && raw->ds5_sidecar->owns(nr)) {
       raw->ds5_sidecar->free(nr);
@@ -2313,6 +2352,11 @@ namespace platf {
   void
   gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
     auto raw = (input_raw_t *) input.get();
+
+    // A raw HID gamepad only takes its own reports
+    if (raw->steam_sidecar && raw->steam_sidecar->owns(nr)) {
+      return;
+    }
 
     if (raw->ds5_sidecar && raw->ds5_sidecar->owns(nr)) {
       raw->ds5_sidecar->submit_input(nr, gamepad_state);
@@ -2663,6 +2707,10 @@ namespace platf {
 
     const auto selected_mode = selected_gamepad_mode(client_gamepad);
     const auto ds5_available = ds5::refresh_component_availability();
+    // The Steam Controller passthrough is hosted by the same optional component
+    if (ds5_available) {
+      caps |= platform_caps::raw_hid_reports;
+    }
     // 能力声明必须与可选 DS5 组件不可用时的创建前回退保持一致。
     const auto gamepad_mode = selected_mode == 4 && !ds5_available ? 1 : selected_mode;
 

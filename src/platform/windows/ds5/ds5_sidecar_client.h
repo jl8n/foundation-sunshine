@@ -42,6 +42,10 @@ namespace platf::ds5 {
     void submit_motion(const gamepad_motion_t &motion);
     void submit_battery(const gamepad_battery_t &battery);
 
+    /** @brief Attach a Steam Controller (2026) that submit_raw() feeds with client reports. */
+    int alloc_steam_controller(const gamepad_id_t &id, feedback_queue_t feedback_queue);
+    void submit_raw(int global_index, std::span<const std::uint8_t> report);
+
   private:
     struct impl_t;
 

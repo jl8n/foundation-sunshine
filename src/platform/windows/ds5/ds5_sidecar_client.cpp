@@ -40,6 +40,9 @@ namespace platf::ds5 {
     using virtual_device_host::protocol::ATTACH_FLAG_GENSHIN_COMPATIBILITY;
     using virtual_device_host::protocol::CAP_AUDIO_POLICY_VIOLATION;
     using virtual_device_host::protocol::CAP_GENSHIN_COMPATIBILITY_IDENTITY;
+    using virtual_device_host::protocol::CAP_STEAM_CONTROLLER_RAW;
+    using virtual_device_host::protocol::MAX_RAW_REPORT_SIZE;
+    using virtual_device_host::protocol::STEAM_CONTROLLER_PROFILE_MODE;
     using virtual_device_host::protocol::HEADER_SIZE;
     using virtual_device_host::protocol::MAGIC;
     using virtual_device_host::protocol::MAX_PAYLOAD;
@@ -259,6 +262,7 @@ namespace platf::ds5 {
     bool audio_haptics_requested = false;
     bool genshin_compatibility_requested = false;
     bool force_hid_fallback = false;
+    bool steam_controller_requested = false;
     feedback_queue_t feedback_queue;
     std::uint32_t next_request_id = 1;
 
@@ -316,6 +320,16 @@ namespace platf::ds5 {
           if (p.size() == 6 && p[0] == owned_index) {
             feedback_queue->raise(gamepad_feedback_msg_t::make_rumble(
               p[1], read_u16(p.data() + 2), read_u16(p.data() + 4)));
+          }
+          break;
+        case message_e::raw_output:
+          // id:u8, controller:u8, length:u16, report
+          if (p.size() >= 4 && p[0] == owned_index) {
+            const auto length = read_u16(p.data() + 2);
+            if (length <= MAX_RAW_REPORT_SIZE && p.size() == 4u + length) {
+              feedback_queue->raise(gamepad_feedback_msg_t::make_raw_hid_output(
+                p[1], std::span<const std::uint8_t> {p.data() + 4, length}));
+            }
           }
           break;
         case message_e::adaptive_triggers:
@@ -494,6 +508,9 @@ namespace platf::ds5 {
         return false;
       }
       const auto capabilities = read_u32(reply.payload.data());
+      if (steam_controller_requested) {
+        return attach_steam_controller(id, capabilities);
+      }
       if (audio_haptics && !(capabilities & CAP_AUDIO_POLICY_VIOLATION)) {
         BOOST_LOG(warning) << "DualSense sidecar does not advertise audio endpoint policy protection; "sv
                            << "falling back to HID-only DualSense"sv;
@@ -533,6 +550,33 @@ namespace platf::ds5 {
       BOOST_LOG(info) << "DualSense sidecar attached controller "sv << id.globalIndex
                       << (reply.payload[1] ? " with native four-channel haptics" : " (HID only)")
                       << (genshin_compatibility_requested ? " using Genshin compatibility identity" : "");
+      return true;
+    }
+
+    bool attach_steam_controller(const gamepad_id_t &id, std::uint32_t capabilities) {
+      if (!(capabilities & CAP_STEAM_CONTROLLER_RAW)) {
+        BOOST_LOG(error) << "The installed controller sidecar cannot host a Steam Controller"sv;
+        return false;
+      }
+
+      message_t reply;
+      std::array<std::uint8_t, 4> attach_payload {
+        static_cast<std::uint8_t>(id.globalIndex),
+        id.clientRelativeIndex,
+        STEAM_CONTROLLER_PROFILE_MODE,
+        0,
+      };
+      // Claim ownership before the transaction so output interleaved ahead of
+      // the attach reply is routed to the queue instead of dropped.
+      global_index = id.globalIndex;
+      if (!transact(message_e::attach, attach_payload, message_e::attach_reply, reply) ||
+          reply.payload.size() != 8 || reply.payload[0] != attach_payload[0]) {
+        return false;
+      }
+
+      client_index = id.clientRelativeIndex;
+      online = true;
+      BOOST_LOG(info) << "Controller sidecar attached Steam Controller "sv << id.globalIndex;
       return true;
     }
 
@@ -735,5 +779,28 @@ namespace platf::ds5 {
       static_cast<std::uint8_t>(battery.id.globalIndex), battery.state, battery.percentage, 0
     };
     _impl->send(message_e::battery, 0, payload);
+  }
+
+  int sidecar_client_t::alloc_steam_controller(const gamepad_id_t &id, feedback_queue_t feedback_queue) {
+    if (!configured() || _impl->global_index >= 0) {
+      return -1;
+    }
+    _impl->feedback_queue = std::move(feedback_queue);
+    _impl->steam_controller_requested = true;
+    if (_impl->attach(id, false, false)) {
+      return 0;
+    }
+    _impl = std::make_unique<impl_t>(published_audio_haptics);
+    return -1;
+  }
+
+  void sidecar_client_t::submit_raw(int global_index, std::span<const std::uint8_t> report) {
+    if (!owns(global_index) || !_impl->online || report.empty() || report.size() > MAX_RAW_REPORT_SIZE) return;
+    // id:u8, reserved:u8, length:u16, report
+    std::array<std::uint8_t, 4 + MAX_RAW_REPORT_SIZE> payload {};
+    payload[0] = static_cast<std::uint8_t>(global_index);
+    write_u16(payload.data() + 2, static_cast<std::uint16_t>(report.size()));
+    std::copy(report.begin(), report.end(), payload.begin() + 4);
+    _impl->send(message_e::raw_input, 0, std::span<const std::uint8_t> {payload.data(), 4 + report.size()});
   }
 }  // namespace platf::ds5

@@ -27,6 +27,11 @@ namespace platf::virtual_device_host::protocol {
   inline constexpr std::uint32_t CAP_VIRTUAL_MICROPHONE = 1u << 10;
   inline constexpr std::uint32_t CAP_PERSISTENT_DEVICE_HOST = 1u << 11;
   inline constexpr std::uint32_t CAP_MICROPHONE_STATUS = 1u << 12;
+  inline constexpr std::uint32_t CAP_STEAM_CONTROLLER_RAW = 1u << 13;
+
+  /** Attach profile byte for a Steam Controller fed with raw client reports. */
+  inline constexpr std::uint8_t STEAM_CONTROLLER_PROFILE_MODE = 2;
+  inline constexpr std::size_t MAX_RAW_REPORT_SIZE = 64;
 
   inline constexpr std::uint8_t ATTACH_FLAG_GENSHIN_COMPATIBILITY = 1u << 0;
   inline constexpr std::uint32_t MICROPHONE_SAMPLE_RATE_HZ = 48'000;
@@ -58,6 +63,7 @@ namespace platf::virtual_device_host::protocol {
     mic_flush_reply = 16,
     mic_destroy = 17,
     mic_destroy_reply = 18,
+    raw_input = 19,
     status = 100,
     rumble = 101,
     adaptive_triggers = 102,
@@ -66,6 +72,7 @@ namespace platf::virtual_device_host::protocol {
     audio_policy_violation = 105,
     host_status = 106,
     mic_status = 107,
+    raw_output = 108,
     error = 255,
   };
 
