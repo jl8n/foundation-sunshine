@@ -17,10 +17,12 @@ internal sealed class DeviceRegistry : IDisposable
 
     private readonly HMContext _context = new();
     private readonly Dictionary<byte, ControllerSession> _controllers = new();
+    private readonly Dictionary<byte, SteamControllerSession> _steamControllers = new();
     private readonly Action<Protocol.Message> _emit;
     private readonly bool _authoredHapticsAvailable;
     private readonly bool _genshinCompatibilityAvailable;
     private readonly bool _microphonePrototypeAvailable;
+    private readonly bool _steamControllerAvailable;
     private VirtualMicrophoneSession? _microphone;
     private uint _nextMicrophoneGeneration = 1;
 
@@ -37,6 +39,8 @@ internal sealed class DeviceRegistry : IDisposable
         _microphonePrototypeAvailable = enableCompositeMicrophonePrototype &&
                                         _authoredHapticsAvailable &&
                                         HasPinnedMicrophoneRuntime;
+        _steamControllerAvailable = _context.GetProfile(SteamControllerSession.ProfileId) is not null &&
+                                    HMContext.IsUsbipBackendAvailable;
     }
 
     internal Protocol.Capability Capabilities =>
@@ -51,6 +55,9 @@ internal sealed class DeviceRegistry : IDisposable
             ? Protocol.Capability.VirtualMicrophone |
               Protocol.Capability.PersistentDeviceHost |
               Protocol.Capability.MicrophoneStatus
+            : 0) |
+        (_steamControllerAvailable
+            ? Protocol.Capability.SteamControllerRaw
             : 0);
 
     internal static bool HasPinnedMicrophoneRuntime
@@ -66,12 +73,17 @@ internal sealed class DeviceRegistry : IDisposable
     /// <summary>Creates a client-owned controller and configures its own render endpoint before replying.</summary>
     internal void Attach(uint requestId, ReadOnlySpan<byte> payload)
     {
-        // id:u8, controller:u8, profile:u8 (0 HID, 1 composite), flags:u8
+        // id:u8, controller:u8, profile:u8 (0 HID, 1 composite, 2 Steam Controller), flags:u8
         if (payload.Length != 4)
             throw new InvalidDataException("Invalid attach payload");
         var deviceId = payload[0];
-        if (_controllers.ContainsKey(deviceId))
+        if (_controllers.ContainsKey(deviceId) || _steamControllers.ContainsKey(deviceId))
             throw new InvalidOperationException("The requested DS5 device already exists");
+        if (payload[2] == Protocol.SteamControllerProfileMode)
+        {
+            AttachSteamController(requestId, deviceId, payload[1], (Protocol.AttachFlags)payload[3]);
+            return;
+        }
 
         var profileId = SelectProfileId(
             payload[2], (Protocol.AttachFlags)payload[3],
@@ -129,6 +141,38 @@ internal sealed class DeviceRegistry : IDisposable
         session.StartDefaultAudioEndpointGuard();
     }
 
+    /// <summary>Creates a virtual Steam Controller that the client drives with raw reports.</summary>
+    private void AttachSteamController(uint requestId, byte deviceId, byte clientControllerNumber,
+                                       Protocol.AttachFlags flags)
+    {
+        if (flags != Protocol.AttachFlags.None)
+            throw new InvalidDataException("Unsupported Steam Controller attach flags");
+        if (!_steamControllerAvailable)
+            throw new InvalidOperationException("The Steam Controller profile or its USB/IP transport is unavailable");
+
+        var profile = _context.GetProfile(SteamControllerSession.ProfileId)!;
+        var controller = _context.CreateController(profile);
+        SteamControllerSession session;
+        try
+        {
+            session = new SteamControllerSession(deviceId, clientControllerNumber, controller, _emit);
+        }
+        catch
+        {
+            controller.Dispose();
+            throw;
+        }
+        _steamControllers.Add(deviceId, session);
+
+        var reply = new byte[8];
+        reply[0] = deviceId;
+        BinaryPrimitives.WriteUInt32LittleEndian(reply.AsSpan(4, 4),
+            (uint)(Protocol.Capability.Hid |
+                   Protocol.Capability.Output |
+                   Protocol.Capability.SteamControllerRaw));
+        _emit(new Protocol.Message(Protocol.MessageType.AttachReply, requestId, reply));
+    }
+
     /// <summary>Acknowledges detach after the owned session and render endpoint have been released.</summary>
     internal void Detach(uint requestId, ReadOnlySpan<byte> payload)
     {
@@ -136,6 +180,8 @@ internal sealed class DeviceRegistry : IDisposable
             throw new InvalidDataException("Invalid detach payload");
         if (_controllers.Remove(payload[0], out var controller))
             controller.Dispose();
+        else if (_steamControllers.Remove(payload[0], out var steamController))
+            steamController.Dispose();
         _emit(new Protocol.Message(Protocol.MessageType.DetachReply, requestId, new[] { payload[0] }));
     }
 
@@ -144,6 +190,14 @@ internal sealed class DeviceRegistry : IDisposable
     {
         if (payload.IsEmpty || !_controllers.TryGetValue(payload[0], out var controller))
             throw new InvalidOperationException("The requested DS5 device is not attached");
+        return controller;
+    }
+
+    /// <summary>Resolves the payload's device ID among the attached Steam Controllers.</summary>
+    internal SteamControllerSession GetSteamController(ReadOnlySpan<byte> payload)
+    {
+        if (payload.IsEmpty || !_steamControllers.TryGetValue(payload[0], out var controller))
+            throw new InvalidOperationException("The requested Steam Controller is not attached");
         return controller;
     }
 
@@ -456,6 +510,18 @@ internal sealed class DeviceRegistry : IDisposable
             }
         }
         _controllers.Clear();
+        foreach (var controller in _steamControllers.Values)
+        {
+            try
+            {
+                controller.Dispose();
+            }
+            catch (Exception error)
+            {
+                cleanupError ??= error;
+            }
+        }
+        _steamControllers.Clear();
         if (cleanupError is not null)
             throw new InvalidOperationException("One or more virtual devices failed to dispose", cleanupError);
     }

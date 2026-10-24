@@ -34,7 +34,11 @@ internal static class Protocol
         VirtualMicrophone = 1u << 10,
         PersistentDeviceHost = 1u << 11,
         MicrophoneStatus = 1u << 12,
+        SteamControllerRaw = 1u << 13,
     }
+
+    /// <summary>Attach profile byte for a Steam Controller fed with raw client reports.</summary>
+    internal const byte SteamControllerProfileMode = 2;
 
     [Flags]
     internal enum AttachFlags : byte
@@ -63,6 +67,7 @@ internal static class Protocol
         MicFlushReply = 16,
         MicDestroy = 17,
         MicDestroyReply = 18,
+        RawInput = 19,
         Status = 100,
         Rumble = 101,
         AdaptiveTriggers = 102,
@@ -71,6 +76,7 @@ internal static class Protocol
         AudioPolicyViolation = 105,
         HostStatus = 106,
         MicStatus = 107,
+        RawOutput = 108,
         Error = 255,
     }
 

@@ -159,6 +159,9 @@ internal sealed class VirtualDeviceHostServer : IAsyncDisposable
                 case Protocol.MessageType.Battery:
                     _devices.GetController(payload).SubmitBattery(payload);
                     break;
+                case Protocol.MessageType.RawInput:
+                    _devices.GetSteamController(payload).SubmitRaw(payload);
+                    break;
                 case Protocol.MessageType.MicCreate:
                     RequireRequestId(header.RequestId, required: true);
                     _devices.CreateMicrophone(header.RequestId, payload);
