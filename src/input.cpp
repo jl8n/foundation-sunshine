@@ -24,6 +24,7 @@ extern "C" {
 #include "text_context/bridge.h"
 #include "input_activity.h"
 #include "pen_barrel_roll.h"
+#include "raw_hid_wire.h"
 #include "logging.h"
 #include "platform/common.h"
 #include "display_device/session.h"
@@ -164,6 +165,10 @@ namespace input {
     bool client_home_pressed = false;
 
     int id;
+
+    // After a failed raw HID allocation, when to try again. Raw reports arrive
+    // every few milliseconds, and each attempt launches the sidecar.
+    std::chrono::steady_clock::time_point raw_hid_retry_after {};
 
     // When emulating the HOME button, we may need to artificially release the back button.
     // Afterwards, the gamepad state on sunshine won't match the state on Moonlight.
@@ -1505,6 +1510,55 @@ namespace input {
   }
 
   /**
+   * @brief Called to pass a controller's raw HID report to the platform backend.
+   * @param input The input context pointer.
+   * @param packet The raw HID report packet.
+   */
+  void
+  passthrough(std::shared_ptr<input_t> &input, raw_hid_wire::packet_t *packet) {
+    if (!config::input.controller) {
+      return;
+    }
+
+    if (packet->controllerNumber >= input->gamepads.size()) {
+      BOOST_LOG(warning) << "ControllerNumber out of range ["sv << packet->controllerNumber << ']';
+      return;
+    }
+
+    const auto length = util::endian::little(packet->reportLength);
+    if (length == 0 || length > raw_hid_wire::max_report_size) {
+      return;
+    }
+
+    // The first report creates the virtual device; there is no arrival packet
+    auto &gamepad = input->gamepads[packet->controllerNumber];
+    if (gamepad.id < 0) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now < gamepad.raw_hid_retry_after) {
+        return;
+      }
+
+      auto id = alloc_id(gamepadMask);
+      if (id < 0) {
+        return;
+      }
+
+      gamepad.reset_state();
+      if (platf::alloc_raw_hid_gamepad(platf_input, { id, packet->controllerNumber },
+                                       util::endian::little(packet->vendorId),
+                                       util::endian::little(packet->productId),
+                                       input->feedback_queue)) {
+        free_id(gamepadMask, id);
+        gamepad.raw_hid_retry_after = now + 10s;
+        return;
+      }
+      gamepad.id = id;
+    }
+
+    platf::raw_hid_input(platf_input, gamepad.id, { packet->report, length });
+  }
+
+  /**
    * @brief Called to pass a controller battery message to the platform backend.
    * @param input The input context pointer.
    * @param packet The controller battery packet.
@@ -2183,6 +2237,11 @@ namespace input {
         break;
       case SS_CONTROLLER_BATTERY_MAGIC:
         passthrough(input, (PSS_CONTROLLER_BATTERY_PACKET) payload);
+        break;
+      case raw_hid_wire::magic:
+        if (entry.size() >= sizeof(raw_hid_wire::packet_t)) {
+          passthrough(input, reinterpret_cast<raw_hid_wire::packet_t *>(payload));
+        }
         break;
     }
 
