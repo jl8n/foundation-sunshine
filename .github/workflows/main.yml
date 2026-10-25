@@ -400,7 +400,7 @@ jobs:
         run: |
           # jrsoftware.org's download page can hand runners something other than the
           # installer, so install Inno Setup 6 from Chocolatey instead
-          choco install innosetup --version=6.* --no-progress -y
+          choco install innosetup --version=6.7.1 --no-progress -y
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup install failed" }
 
       - name: Add Inno Setup to PATH
