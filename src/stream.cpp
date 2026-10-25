@@ -52,6 +52,7 @@ extern "C" {
 #include "logging.h"
 #include "mic_mixer.h"
 #include "network.h"
+#include "raw_hid_wire.h"
 #include "streaming/perf_recorder.h"
 #include "stream.h"
 #include "sync.h"
@@ -1463,7 +1464,7 @@ namespace stream {
         sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
         encrypted_payload;
 
-      payload = encode_control(session, std::string_view {reinterpret_cast<const char *>(&plaintext), size}, encrypted_payload);
+      payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(&plaintext), size), encrypted_payload);
     }
     else if (msg.type == platf::gamepad_feedback_e::set_adaptive_triggers) {
       control_adaptive_triggers_t plaintext;
